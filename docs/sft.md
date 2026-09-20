@@ -31,6 +31,12 @@ bash scripts/sft_curriculum.sh --dry-run
 bash scripts/sft_curriculum.sh --swanlab
 ```
 
+SFT is launched with `torchrun` and Transformers FSDP2. By default the launcher
+uses all GPUs on the node (`--nproc-per-node=gpu`). Set `SFT_NPROC_PER_NODE` or
+pass `--nproc-per-node` to the curriculum launcher to limit the worker count.
+The existing `--gradient-checkpointing` flag maps to FSDP activation
+checkpointing, avoiding a second model-level checkpointing implementation.
+
 The launcher trains a LoRA adapter and then merges it with the base model:
 
 ```text
@@ -52,6 +58,7 @@ Default recipe:
 | Gradient checkpointing | enabled |
 | Attention implementation | SDPA |
 | Saved epoch checkpoints | 3 |
+| Distributed backend | FSDP2 full sharding |
 
 The long context is intentional: a training example includes the complete
 multi-turn interaction. Shortening it may truncate the terminal decision or the

@@ -76,6 +76,9 @@ rates. `skipped_update` records make zero-signal attempts visible even though
 they do not advance the optimizer step.
 
 The canonical configuration is [`configs/grpo.yaml`](../configs/grpo.yaml).
+The actor and reference policy explicitly use veRL's `fsdp` strategy; the
+runtime preflight rejects overrides that switch either component back to a
+replicated data-parallel backend.
 Advanced overrides may be appended after `--`:
 
 ```bash

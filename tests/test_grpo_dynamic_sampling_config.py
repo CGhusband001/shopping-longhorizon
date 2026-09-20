@@ -10,11 +10,35 @@ from scripts.check_grpo_runtime import (
     PATCH_MARKER,
     compose_runtime_config,
     validate_dynamic_sampling,
+    validate_fsdp_strategy,
     validate_training_memory_budget,
 )
 
 
 class DynamicSamplingConfigTest(unittest.TestCase):
+    def test_grpo_explicitly_requires_fsdp_actor_and_reference(self):
+        class Config(dict):
+            __getattr__ = dict.__getitem__
+
+        config = Config(
+            actor_rollout_ref=Config(
+                actor=Config(strategy="fsdp", fsdp_config=Config(enabled=True)),
+                ref=Config(strategy="fsdp", fsdp_config=Config(enabled=True)),
+            )
+        )
+        validate_fsdp_strategy(config)
+        self.assertEqual(config.actor_rollout_ref.actor.strategy, "fsdp")
+        self.assertEqual(config.actor_rollout_ref.ref.strategy, "fsdp")
+
+        unsafe = Config(
+            actor_rollout_ref=Config(
+                actor=Config(strategy="megatron", fsdp_config=Config(enabled=True)),
+                ref=Config(strategy="fsdp", fsdp_config=Config(enabled=True)),
+            )
+        )
+        with self.assertRaisesRegex(SystemExit, "requires veRL FSDP"):
+            validate_fsdp_strategy(unsafe)
+
     def test_training_memory_budget_enforces_real_micro_batch_one(self):
         config = compose_runtime_config([])
         validate_training_memory_budget(config)

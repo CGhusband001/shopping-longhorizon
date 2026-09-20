@@ -32,6 +32,8 @@ class SftCurriculumTest(unittest.TestCase):
         self.assertTrue(commands[2]["merge"][commands[2]["merge"].index("--output") + 1].endswith("stage-c/merged"))
         self.assertIn("--curriculum-manifest", commands[0]["train"])
         self.assertIn("--gradient-checkpointing", commands[0]["train"])
+        self.assertEqual(commands[0]["train"][:3], ["python", "-m", "torch.distributed.run"])
+        self.assertIn("--nproc-per-node=gpu", commands[0]["train"])
 
     def test_start_and_stop_select_a_contiguous_stage_range(self):
         manifest = {
@@ -50,10 +52,12 @@ class SftCurriculumTest(unittest.TestCase):
             start_stage="b",
             stop_after_stage="b",
             swanlab=True,
+            nproc_per_node="2",
         )
 
         self.assertEqual([command["stage"] for command in commands], ["b"])
         self.assertIn("--swanlab", commands[0]["train"])
+        self.assertIn("--nproc-per-node=2", commands[0]["train"])
         self.assertIn("stage-b/adapter", " ".join(commands[0]["train"]))
 
         with self.assertRaisesRegex(ValueError, "after"):

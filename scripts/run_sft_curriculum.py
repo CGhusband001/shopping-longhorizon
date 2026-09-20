@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -31,6 +32,7 @@ def build_stage_commands(
     qlora=False,
     liger_kernel=False,
     resume_from_checkpoint=None,
+    nproc_per_node="gpu",
 ):
     start = STAGES.index(start_stage)
     stop = STAGES.index(stop_after_stage)
@@ -48,6 +50,10 @@ def build_stage_commands(
         )
         train = [
             str(python),
+            "-m",
+            "torch.distributed.run",
+            "--standalone",
+            f"--nproc-per-node={nproc_per_node}",
             str(ROOT / "scripts/train_lora_sft.py"),
             "--model",
             str(model),
@@ -117,6 +123,11 @@ def parse_args():
     parser.add_argument("--swanlab-project", default="shopping-grpo-sft-curriculum")
     parser.add_argument("--qlora", action="store_true")
     parser.add_argument("--liger-kernel", action="store_true")
+    parser.add_argument(
+        "--nproc-per-node",
+        default=os.environ.get("SFT_NPROC_PER_NODE", "gpu"),
+        help="torchrun 每节点进程数；默认 gpu，使用当前节点全部 GPU。",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -144,6 +155,7 @@ def main():
             qlora=args.qlora,
             liger_kernel=args.liger_kernel,
             resume_from_checkpoint=args.resume_from_checkpoint,
+            nproc_per_node=args.nproc_per_node,
         )
     except (KeyError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc

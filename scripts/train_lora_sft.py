@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import time as _time
 from functools import partial
 from pathlib import Path
@@ -29,6 +30,30 @@ DEFAULT_TARGET_MODULES = (
     "in_proj_a",
     "out_proj",
 )
+
+
+def _fsdp_config(activation_checkpointing):
+    return {
+        "version": 2,
+        "reshard_after_forward": True,
+        "auto_wrap_policy": "TRANSFORMER_BASED_WRAP",
+        "state_dict_type": "FULL_STATE_DICT",
+        "activation_checkpointing": activation_checkpointing,
+    }
+
+
+def _require_fsdp_launch(environment=None):
+    environment = os.environ if environment is None else environment
+    if "LOCAL_RANK" not in environment:
+        raise SystemExit(
+            "SFT uses FSDP2 and must be launched with torchrun; "
+            "use scripts/sft.sh or scripts/sft_curriculum.sh"
+        )
+
+
+def _is_global_zero(environment=None):
+    environment = os.environ if environment is None else environment
+    return int(environment.get("RANK", "0")) == 0
 
 
 def parse_args():
@@ -173,14 +198,14 @@ def _model_load_kwargs(args, dtype, bits_and_bytes_config):
 
 
 def _prepare_model_for_training(model, args, prepare_model_for_kbit_training):
-    """按 PEFT 推荐顺序准备量化模型与梯度检查点。"""
+    """按 PEFT 推荐顺序准备量化模型，激活重算交给 FSDP。"""
     if args.qlora:
         model = prepare_model_for_kbit_training(
-            model, use_gradient_checkpointing=args.gradient_checkpointing
+            model, use_gradient_checkpointing=False
         )
     if args.gradient_checkpointing:
         model.config.use_cache = False
-        if not args.qlora and hasattr(model, "enable_input_require_grads"):
+        if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
     return model
 
@@ -338,6 +363,7 @@ def _collate(batch, pad_token_id, torch):
 def main():
     _start_time = _time.time()
     args = parse_args()
+    _require_fsdp_launch()
     if args.max_length < 1 or args.epochs <= 0:
         raise SystemExit("--max-length 与 --epochs 必须为正数")
     if bool(args.curriculum_manifest) != bool(args.curriculum_stage):
@@ -505,7 +531,7 @@ def main():
 
     args.output.mkdir(parents=True, exist_ok=True)
     report_to, run_name = _swanlab_config(args)
-    if report_to == "swanlab":
+    if report_to == "swanlab" and _is_global_zero():
         import swanlab
         swanlab.init(
             project=args.swanlab_project,
@@ -524,7 +550,9 @@ def main():
         warmup_ratio=args.warmup_ratio,
         bf16=dtype_name == "bf16",
         fp16=dtype_name == "fp16",
-        gradient_checkpointing=args.gradient_checkpointing,
+        gradient_checkpointing=False,
+        fsdp=True,
+        fsdp_config=_fsdp_config(args.gradient_checkpointing),
         use_liger_kernel=args.liger_kernel,
         logging_steps=args.logging_steps,
         save_strategy="epoch",
@@ -550,7 +578,8 @@ def main():
     )
     result = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
     trainer.save_model(str(args.output))
-    chat_template.save_pretrained(str(args.output))
+    if trainer.is_world_process_zero():
+        chat_template.save_pretrained(str(args.output))
 
     # --- 训练完成摘要 ---
     total_time = _time.time() - _start_time
@@ -571,6 +600,8 @@ def main():
             "mode": args.swanlab_mode if args.swanlab else None,
         },
         "acceleration": {
+            "distributed_backend": "fsdp2",
+            "fsdp": _fsdp_config(args.gradient_checkpointing),
             "dtype": dtype_name,
             "liger_kernel": args.liger_kernel,
             "attention_implementation": args.attention_implementation,
@@ -579,20 +610,21 @@ def main():
         "arguments": vars(args),
     }
 
-    print(f"\n{'='*60}")
-    print("  训练完成")
-    print(f"  train_loss={result.training_loss:.4f}")
-    print(f"  eval_loss={result.metrics.get('eval_loss', 'N/A')}")
-    print(f"  peak_gpu={gpu_peak:.1f} GiB")
-    print(f"  adapter → {args.output}")
-    print(f"{'='*60}\n")
+    if trainer.is_world_process_zero():
+        print(f"\n{'='*60}")
+        print("  训练完成")
+        print(f"  train_loss={result.training_loss:.4f}")
+        print(f"  eval_loss={result.metrics.get('eval_loss', 'N/A')}")
+        print(f"  peak_gpu={gpu_peak:.1f} GiB")
+        print(f"  adapter → {args.output}")
+        print(f"{'='*60}\n")
 
-    (args.output / "train_summary.json").write_text(
-        json.dumps(train_summary, ensure_ascii=False, indent=2, default=str),
-        encoding="utf-8",
-    )
+        (args.output / "train_summary.json").write_text(
+            json.dumps(train_summary, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
 
-    print(f"LoRA adapter 已保存到 {args.output}")
+        print(f"LoRA adapter 已保存到 {args.output}")
 
 
 if __name__ == "__main__":

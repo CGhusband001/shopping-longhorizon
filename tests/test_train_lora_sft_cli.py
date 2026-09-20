@@ -10,10 +10,13 @@ from unittest.mock import patch
 
 from scripts.train_lora_sft import (
     DEFAULT_TARGET_MODULES,
+    _fsdp_config,
+    _is_global_zero,
     _load_preprocessing_components,
     _loss_only_eval_trainer_class,
     _model_load_kwargs,
     _prepare_model_for_training,
+    _require_fsdp_launch,
     _resolve_dtype,
     _swanlab_config,
     _curriculum_task_ids,
@@ -88,6 +91,23 @@ class _FakeTrainer:
 
 
 class TrainLoraSftCliTest(unittest.TestCase):
+    def test_fsdp2_config_uses_full_sharding_and_activation_checkpointing(self):
+        config = _fsdp_config(activation_checkpointing=True)
+
+        self.assertEqual(config["version"], 2)
+        self.assertTrue(config["reshard_after_forward"])
+        self.assertEqual(config["auto_wrap_policy"], "TRANSFORMER_BASED_WRAP")
+        self.assertEqual(config["state_dict_type"], "FULL_STATE_DICT")
+        self.assertTrue(config["activation_checkpointing"])
+
+    def test_sft_requires_torchrun_and_only_rank_zero_writes_artifacts(self):
+        with self.assertRaisesRegex(SystemExit, "torchrun"):
+            _require_fsdp_launch({})
+
+        _require_fsdp_launch({"LOCAL_RANK": "0"})
+        self.assertTrue(_is_global_zero({"RANK": "0"}))
+        self.assertFalse(_is_global_zero({"RANK": "1"}))
+
     def test_curriculum_manifest_expands_cumulative_stage_ids(self):
         manifest = {
             "stages": {"b": {"buckets": ["foundation", "constraints"]}},
@@ -318,8 +338,9 @@ class TrainLoraSftCliTest(unittest.TestCase):
         result = _prepare_model_for_training(model, args, prepare)
 
         self.assertIs(result, prepared)
-        prepare.assert_called_once_with(model, use_gradient_checkpointing=True)
+        prepare.assert_called_once_with(model, use_gradient_checkpointing=False)
         self.assertFalse(result.config.use_cache)
+        self.assertTrue(result.input_grads_enabled)
 
     def test_liger_qwen_loss_only_eval_skips_full_vocabulary_logits(self):
         """纯 eval_loss 必须显式走 Liger fused loss，避免 20K×248K logits。"""

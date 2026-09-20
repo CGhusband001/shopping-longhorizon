@@ -7,7 +7,10 @@ ADAPTER_DIR="${SFT_ADAPTER_DIR:-$ROOT/outputs/models/sft-lora}"
 MERGED_DIR="${SFT_MERGED_DIR:-$ROOT/outputs/models/sft-merged}"
 
 cd "$ROOT"
-"$ROOT/.venv/bin/python" scripts/train_lora_sft.py \
+"$ROOT/.venv/bin/python" -m torch.distributed.run \
+  --standalone \
+  --nproc-per-node "${SFT_NPROC_PER_NODE:-gpu}" \
+  scripts/train_lora_sft.py \
   --model "$BASE_MODEL" \
   --train data/sft/train.jsonl \
   --validation data/sft/validation.jsonl \

@@ -140,6 +140,17 @@ def compose_runtime_config(overrides):
         return compose(config_name=config_name, overrides=list(overrides))
 
 
+def validate_fsdp_strategy(config):
+    actor = config.actor_rollout_ref.actor
+    reference = config.actor_rollout_ref.ref
+    if actor.strategy != "fsdp" or reference.strategy != "fsdp":
+        raise SystemExit(
+            "GRPO requires veRL FSDP for both actor and reference policy"
+        )
+    if not actor.get("fsdp_config") or not reference.get("fsdp_config"):
+        raise SystemExit("GRPO FSDP engine configuration is missing")
+
+
 def validate_transformers_revision():
     """The Qwen3.5 runtime uses one pinned upstream Transformers revision."""
     dist = distribution("transformers")
@@ -387,6 +398,7 @@ def main():
     missing = [name for name, value in required_paths.items() if not value or not Path(value).is_file()]
     if missing:
         raise SystemExit("missing GRPO parquet file(s): " + ", ".join(missing))
+    validate_fsdp_strategy(config)
     validate_training_memory_budget(config)
 
     if sys.version_info[:2] != (3, 12):
