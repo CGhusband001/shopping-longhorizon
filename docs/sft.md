@@ -31,11 +31,14 @@ bash scripts/sft_curriculum.sh --dry-run
 bash scripts/sft_curriculum.sh --swanlab
 ```
 
-SFT is launched with `torchrun` and Transformers FSDP2. By default the launcher
+SFT is launched with `torchrun` and Transformers DDP. Each worker keeps a full
+model replica and synchronizes trainable LoRA gradients. By default the launcher
 uses all GPUs on the node (`--nproc-per-node=gpu`). Set `SFT_NPROC_PER_NODE` or
 pass `--nproc-per-node` to the curriculum launcher to limit the worker count.
-The existing `--gradient-checkpointing` flag maps to FSDP activation
-checkpointing, avoiding a second model-level checkpointing implementation.
+The `--gradient-checkpointing` flag enables Trainer-managed non-reentrant
+gradient checkpointing. DDP detects unused parameters to support multimodal
+LoRA modules that are not exercised by text-only trajectories. A one-worker
+launch runs without distributed wrapping. Artifact writes remain on global rank zero.
 
 The launcher trains a LoRA adapter and then merges it with the base model:
 
@@ -58,7 +61,11 @@ Default recipe:
 | Gradient checkpointing | enabled |
 | Attention implementation | SDPA |
 | Saved epoch checkpoints | 3 |
-| Distributed backend | FSDP2 full sharding |
+| Distributed backend | DDP |
+
+The effective batch size is worker count × per-device batch size × gradient
+accumulation. With eight workers the current defaults produce an effective batch
+of 64; changing the distributed backend does not change these batch settings.
 
 The long context is intentional: a training example includes the complete
 multi-turn interaction. Shortening it may truncate the terminal decision or the

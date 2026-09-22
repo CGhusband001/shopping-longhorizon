@@ -32,21 +32,11 @@ DEFAULT_TARGET_MODULES = (
 )
 
 
-def _fsdp_config(activation_checkpointing):
-    return {
-        "version": 2,
-        "reshard_after_forward": True,
-        "auto_wrap_policy": "TRANSFORMER_BASED_WRAP",
-        "state_dict_type": "FULL_STATE_DICT",
-        "activation_checkpointing": activation_checkpointing,
-    }
-
-
-def _require_fsdp_launch(environment=None):
+def _require_torchrun_launch(environment=None):
     environment = os.environ if environment is None else environment
     if "LOCAL_RANK" not in environment:
         raise SystemExit(
-            "SFT uses FSDP2 and must be launched with torchrun; "
+            "SFT uses DDP and must be launched with torchrun; "
             "use scripts/sft.sh or scripts/sft_curriculum.sh"
         )
 
@@ -188,6 +178,8 @@ def _model_load_kwargs(args, dtype, bits_and_bytes_config):
     if args.attention_implementation != "auto":
         kwargs["attn_implementation"] = args.attention_implementation
     if args.qlora:
+        # 每个 DDP worker 只在自己的 GPU 上加载量化模型。
+        kwargs["device_map"] = {"": int(os.environ.get("LOCAL_RANK", "0"))}
         kwargs["quantization_config"] = bits_and_bytes_config(
             load_in_4bit=True,
             bnb_4bit_compute_dtype=dtype,
@@ -198,7 +190,7 @@ def _model_load_kwargs(args, dtype, bits_and_bytes_config):
 
 
 def _prepare_model_for_training(model, args, prepare_model_for_kbit_training):
-    """按 PEFT 推荐顺序准备量化模型，激活重算交给 FSDP。"""
+    """按 PEFT 推荐顺序准备量化模型，激活重算统一交给 Trainer。"""
     if args.qlora:
         model = prepare_model_for_kbit_training(
             model, use_gradient_checkpointing=False
@@ -363,7 +355,7 @@ def _collate(batch, pad_token_id, torch):
 def main():
     _start_time = _time.time()
     args = parse_args()
-    _require_fsdp_launch()
+    _require_torchrun_launch()
     if args.max_length < 1 or args.epochs <= 0:
         raise SystemExit("--max-length 与 --epochs 必须为正数")
     if bool(args.curriculum_manifest) != bool(args.curriculum_stage):
@@ -550,9 +542,11 @@ def main():
         warmup_ratio=args.warmup_ratio,
         bf16=dtype_name == "bf16",
         fp16=dtype_name == "fp16",
-        gradient_checkpointing=False,
-        fsdp=True,
-        fsdp_config=_fsdp_config(args.gradient_checkpointing),
+        gradient_checkpointing=args.gradient_checkpointing,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        # 纯文本轨迹可能不会用到多模态模型中的部分 LoRA 模块。
+        # 非重入 checkpointing 可与 DDP unused-parameter 检测一起使用。
+        ddp_find_unused_parameters=True,
         use_liger_kernel=args.liger_kernel,
         logging_steps=args.logging_steps,
         save_strategy="epoch",
@@ -600,8 +594,7 @@ def main():
             "mode": args.swanlab_mode if args.swanlab else None,
         },
         "acceleration": {
-            "distributed_backend": "fsdp2",
-            "fsdp": _fsdp_config(args.gradient_checkpointing),
+            "distributed_backend": "ddp" if trainer.args.world_size > 1 else "single",
             "dtype": dtype_name,
             "liger_kernel": args.liger_kernel,
             "attention_implementation": args.attention_implementation,
